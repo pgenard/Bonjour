@@ -26,12 +26,14 @@ $ vvp tb_uart_tx.sim
 ```bash
 # Synthesis
 $ yosys -p "read_verilog uart_tx.v uart_rx.v bonjour.v; synth_ice40 -top bonjour -json bonjour.json"
+
 # Place and Route (PnR)
 $ nextpnr-ice40 --hx1k --package tq144 --json bonjour.json --pcf bonjour.pcf --asc bonjour.asc
+
 # Bitstream Generation
 $ icepack bonjour.asc bonjour.bin
-# FPGA Programming
-# Plug the iCEStick !
+
+# Plug the iCEStick ! -> FPGA Progamming
 $ iceprog bonjour.bin
 ```
 

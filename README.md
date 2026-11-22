@@ -33,7 +33,7 @@ $ nextpnr-ice40 --hx1k --package tq144 --json bonjour.json --pcf bonjour.pcf --a
 # Bitstream Generation
 $ icepack bonjour.asc bonjour.bin
 
-# Plug the iCEStick ! -> FPGA Progamming
+# Plug the iCEStick ! -> FPGA Programming
 $ iceprog bonjour.bin
 ```
 

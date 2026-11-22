@@ -4,7 +4,7 @@
 `timescale 1ns/1ps
 
 module uart_tx #(
-    parameter CLK_HZ = 100000000,
+    parameter CLK_HZ = 12000000,
     parameter BAUD   = 115200
 )(
     input  wire       clk,
@@ -15,7 +15,7 @@ module uart_tx #(
     output wire       busy,     // 1 while sending
     output reg        done      // 1-cycle completion pulse
 );
-    localparam CLKS_PER_BIT = CLK_HZ / BAUD; // 868 at 100MHz/115200
+    localparam CLKS_PER_BIT = CLK_HZ / BAUD; // 104 at 12000000 / 115200
     localparam IDLE=2'd0, START=2'd1, DATA=2'd2, STOP=2'd3;
 
     reg [1:0]  state;
@@ -57,4 +57,4 @@ module uart_tx #(
             endcase
         end
     end
-endmodule
+endmodule // uart_tx

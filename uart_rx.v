@@ -1,143 +1,173 @@
-// uart_rx.v — 8N1 UART Receiver with 16x oversampling
-// CLKS_PER_BIT = system_clk_freq / baud_rate
-// e.g. 100 MHz / 115200 = 868
+// UART Receiver — 8N1 // Target: iCE40HX1K (iCEstick) // Clock: 12 MHz // Baud: 115200 // Fractional half-bit timing using a phase accumulator
 
 `timescale 1ns/1ps
 
-module uart_rx #(
-    parameter CLKS_PER_BIT = 868   // clocks per one UART bit
-)(
-    input  wire       clk,
-    input  wire       rst,
-    input  wire       rx,
-    output reg  [7:0] data,
-    output reg        valid,
-    output reg        err
+module uart_rx #( 
+  parameter CLK_HZ = 12000000, 
+  parameter BAUD = 115200) ( 
+  input wire clk, 
+  input wire rst, 
+  input wire rx, 
+  output reg[7:0] data, 
+  output reg valid, 
+  output reg err 
 );
 
-// Oversample at 16x: ticks per oversample period
-localparam OSAMP_DIV  = CLKS_PER_BIT / 16;   // ~54 for 100MHz/115200
-localparam HALF_BIT   = 8;   // 8 oversampling ticks = half bit period
-localparam FULL_BIT   = 16;  // 16 oversampling ticks = full bit period
+localparam IDLE  = 2'd0;
+localparam START = 2'd1;
+localparam DATA  = 2'd2;
+localparam STOP  = 2'd3;
 
-// FSM states
-localparam IDLE  = 2'd0,
-           START = 2'd1,
-           DATA  = 2'd2,
-           STOP  = 2'd3;
+// Generate one timing event every half UART bit.
+// Average interval = CLK_HZ / (2 * BAUD).
 
-reg [1:0]  state     = IDLE;
-reg [9:0]  clk_cnt   = 0;    // counts system clocks for one oversample tick
-reg [3:0]  osamp_cnt = 0;    // counts oversampling ticks within a bit
-reg [2:0]  bit_idx   = 0;    // which data bit we are receiving (0-7)
-reg [7:0]  shift_reg = 0;    // shift register accumulates data bits
+localparam [31:0] HALF_BIT_INC = ((64'd2 * BAUD * 64'd4294967296) + (CLK_HZ/2)) / CLK_HZ;
 
-// Double-flop rx input to meta-stabilise
-reg rx_s1, rx_s2;
-always @(posedge clk) begin
-    rx_s1 <= rx;
-    rx_s2 <= rx_s1;
-end
+reg[31:0] phase_acc;
+wire[32:0] phase_sum;
 
-// Oversample tick strobe (pulses high once every OSAMP_DIV clocks)
-reg tick;
+assign phase_sum = {1'b0, phase_acc} + {1'b0, HALF_BIT_INC};
+
+wire half_tick = phase_sum[32];
+
+// UART input synchronizer
+
+reg rx_s1;
+reg rx_s2;
+
 always @(posedge clk) begin
     if (rst) begin
-        clk_cnt <= 0;
-        tick    <= 0;
-    end else begin
-        tick <= 0;
-        if (clk_cnt == OSAMP_DIV - 1) begin
-            clk_cnt <= 0;
-            tick    <= 1;
-        end else begin
-            clk_cnt <= clk_cnt + 1;
-        end
+        rx_s1 <= 1'b1;
+        rx_s2 <= 1'b1;
+    end
+    else begin
+        rx_s1 <= rx;
+        rx_s2 <= rx_s1;
     end
 end
 
-// Main receiver FSM
+// Receiver state
+
+reg [1:0] state = IDLE;
+
+reg half_count;
+reg [2:0] bit_idx;
+reg [7:0] shift_reg;
+
 always @(posedge clk) begin
+
     if (rst) begin
-        state     <= IDLE;
-        osamp_cnt <= 0;
-        bit_idx   <= 0;
-        shift_reg <= 0;
-        data      <= 0;
-        valid     <= 0;
-        err       <= 0;
-    end else begin
+        state      <= IDLE;
+        phase_acc  <= 0;
+        half_count <= 0;
+        bit_idx    <= 0;
+        shift_reg  <= 0;
+        data       <= 0;
+        valid      <= 0;
+        err        <= 0;
+    end
+    else begin
         valid <= 0;
         err   <= 0;
 
         case (state)
-            // -------------------------------------------------------
+            // -------------------------
+            // IDLE
+            // -------------------------
+
             IDLE: begin
-                osamp_cnt <= 0;
-                bit_idx   <= 0;
-                // Detect falling edge of start bit
-                if (rx_s2 == 1'b0)
-                    state <= START;
+                phase_acc  <= 0;
+                half_count <= 0;
+
+                if (!rx_s2) begin
+                    state     <= START;
+                    phase_acc <= 0;
+                end
             end
 
-            // -------------------------------------------------------
-            // Wait half a bit period, then re-check RX is still 0
+            // -------------------------
+            // START BIT
+            // Sample at half-bit centre
+            // -------------------------
+
             START: begin
-                if (tick) begin
-                    if (osamp_cnt == HALF_BIT - 1) begin
-                        osamp_cnt <= 0;
-                        if (rx_s2 == 1'b0)
-                            state <= DATA;  // confirmed start bit
-                        else
-                            state <= IDLE;  // noise glitch, ignore
-                    end else begin
-                        osamp_cnt <= osamp_cnt + 1;
+                phase_acc <= phase_sum[31:0];
+
+                if (half_tick) begin
+
+                    if (!rx_s2) begin
+                        state      <= DATA;
+                        bit_idx    <= 0;
+                        half_count <= 0;
+                    end
+                    else begin
+                        state <= IDLE;
                     end
                 end
             end
 
-            // -------------------------------------------------------
-            // Sample each data bit at its centre (every 16 ticks)
+            // -------------------------
+            // DATA BITS
+            // LSB first
+            // -------------------------
+
             DATA: begin
-                if (tick) begin
-                    if (osamp_cnt == FULL_BIT - 1) begin
-                        osamp_cnt <= 0;
-                        // Sample bit at centre
-                        shift_reg <= {rx_s2, shift_reg[7:1]};  // LSB first
+                phase_acc <= phase_sum[31:0];
+
+                if (half_tick) begin
+                    if (half_count) begin
+                        half_count <= 0;
+
+                        shift_reg <= {
+                            rx_s2,
+                            shift_reg[7:1]
+                        };
+
                         if (bit_idx == 3'd7) begin
-                            bit_idx <= 0;
-                            state   <= STOP;
-                        end else begin
-                            bit_idx <= bit_idx + 1;
+                            state <= STOP;
                         end
-                    end else begin
-                        osamp_cnt <= osamp_cnt + 1;
+                        else begin
+                            bit_idx <= bit_idx + 1'b1;
+                        end
+                    end
+                    else begin
+                        half_count <= 1;
                     end
                 end
             end
 
-            // -------------------------------------------------------
-            // Wait one full bit period then sample stop bit
+            // -------------------------
+            // STOP BIT
+            // -------------------------
+
             STOP: begin
-                if (tick) begin
-                    if (osamp_cnt == FULL_BIT - 1) begin
-                        osamp_cnt <= 0;
-                        state     <= IDLE;
-                        if (rx_s2 == 1'b1) begin
+                phase_acc <= phase_sum[31:0];
+
+                if (half_tick) begin
+                    if (half_count) begin
+                        half_count <= 0;
+                        state <= IDLE;
+
+                        if (rx_s2) begin
                             data  <= shift_reg;
-                            valid <= 1;
-                        end else begin
-                            err   <= 1;  // framing error
+                            valid <= 1'b1;
                         end
-                    end else begin
-                        osamp_cnt <= osamp_cnt + 1;
+                        else begin
+                            err <= 1'b1;
+                        end
+                    end
+                    else begin
+                        half_count <= 1;
                     end
                 end
             end
 
-            default: state <= IDLE;
+            default: begin
+                state <= IDLE;
+                phase_acc <= 0;
+            end
         endcase
     end
 end
 
-endmodule
+endmodule // uart_rx

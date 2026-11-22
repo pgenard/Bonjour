@@ -11,6 +11,8 @@ Bonjour/
 ├── uart_tx.v          # UART transmitter
 ├── uart_rx.v          # UART receiver
 ├── bonjour.pcf        # iCE40 pin constraints
+├── bonjour.v          # Top / Bonjour module
+├── bonjour.bin        # Bonjour bitstream
 ├── tb_uart_tx.v       # UART transmitter testbench
 └── .gitignore
 ```
